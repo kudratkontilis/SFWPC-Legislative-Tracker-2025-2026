@@ -1653,7 +1653,11 @@ const POSITION_BADGE = {
   "OPPOSE":  { bg:"#FCEAEA", text:"#8C2A2A", border:"#C04040" },
 };
 
-function BillCard({ bill, priorityColor, idx }) {
+function BillCard({ bill, priorityColor, idx, liveUpdate }) {
+  // Merge live update into bill data if available
+  const effectiveBill = liveUpdate && liveUpdate.changed
+    ? { ...bill, stage: liveUpdate.stage || bill.stage, lastAction: liveUpdate.lastAction || bill.lastAction, committee: liveUpdate.committee || bill.committee, hearingDate: liveUpdate.hearingDate || bill.hearingDate }
+    : bill;
   const [open, setOpen] = useState(false);
   const isOppose  = bill.position === "OPPOSE";
   const isSupport = bill.position === "SUPPORT";
@@ -1662,10 +1666,14 @@ function BillCard({ bill, priorityColor, idx }) {
   const cardBorderLeft = isOppose ? "#C04040" : priorityColor;
   const cardBg = isOppose ? "#FDF5F5" : C.cream;
 
+  // Use live update data if available
+  const displayBill = liveUpdate && liveUpdate.changed ? effectiveBill : bill;
+  const hasLiveUpdate = liveUpdate && liveUpdate.changed;
+
   // Urgency calculation for header badge
   const today = new Date(); today.setHours(0,0,0,0);
-  const hDate = bill.hearingDate ? new Date(bill.hearingDate+"T12:00:00") : null;
-  const lDate = bill.letterDeadline ? new Date(bill.letterDeadline+"T12:00:00") : null;
+  const hDate = displayBill.hearingDate ? new Date(displayBill.hearingDate+"T12:00:00") : null;
+  const lDate = displayBill.letterDeadline ? new Date(displayBill.letterDeadline+"T12:00:00") : null;
   const hDiff = hDate ? Math.ceil((hDate-today)/(1000*60*60*24)) : null;
   const lDiff = lDate ? Math.ceil((lDate-today)/(1000*60*60*24)) : null;
   const showUrgentBadge = lDiff !== null && lDiff <= 7 && lDiff >= -1;
@@ -1687,12 +1695,12 @@ function BillCard({ bill, priorityColor, idx }) {
       onClick={()=>setOpen(o=>!o)}
       style={{
         background: cardBg, borderRadius:3,
-        border:`1px solid ${isOppose ? "#E8C0C0" : C.border}`,
-        borderLeft:`4px solid ${cardBorderLeft}`,
+        border:`1px solid ${hasLiveUpdate ? "#2A7A50" : isOppose ? "#E8C0C0" : C.border}`,
+        borderLeft:`4px solid ${hasLiveUpdate ? "#2A7A50" : cardBorderLeft}`,
         marginBottom:"0.65rem", cursor:"pointer",
         boxShadow: open ? "0 6px 22px rgba(27,42,74,0.10)" : "0 1px 3px rgba(27,42,74,0.04)",
         animation:`fadeUp 0.3s ease ${idx*0.04}s both`,
-        transition:"box-shadow 0.2s",
+        transition:"box-shadow 0.2s, border-color 0.3s",
       }}
     >
       {/* ── TOP ── */}
@@ -1700,6 +1708,9 @@ function BillCard({ bill, priorityColor, idx }) {
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ display:"flex", flexWrap:"wrap", alignItems:"center", gap:"0.35rem", marginBottom:"0.18rem" }}>
             <span style={{ fontFamily:"'Libre Baskerville',serif", fontWeight:700, fontSize:"0.85rem", color:C.text, whiteSpace:"nowrap" }}>{bill.id}</span>
+            {hasLiveUpdate && (
+              <span style={{ fontSize:"0.55rem", background:"#E8F5EE", color:"#1B5A3A", border:"1px solid #2A7A50", padding:"2px 6px", borderRadius:2, fontFamily:"'Libre Baskerville',serif", letterSpacing:"0.07em", textTransform:"uppercase", fontWeight:700 }}>⚡ Status Updated</span>
+            )}
             <span style={{
               fontSize:"0.55rem", fontFamily:"'Libre Baskerville',serif",
               letterSpacing:"0.1em", textTransform:"uppercase",
@@ -1711,10 +1722,10 @@ function BillCard({ bill, priorityColor, idx }) {
             {bill.enacted && (
               <span style={{ fontSize:"0.55rem", background:"#E6F3EC", color:"#1B5A3A", border:"1px solid #2A7A50", padding:"2px 6px", borderRadius:2, fontFamily:"'Libre Baskerville',serif", letterSpacing:"0.07em", textTransform:"uppercase" }}>✓ Enacted</span>
             )}
-            {bill.stage==="TwoYear" && (
+            {displayBill.stage==="TwoYear" && (
               <span style={{ fontSize:"0.55rem", background:"#FFF4E0", color:"#7A5000", border:`1px solid ${C.gold}`, padding:"2px 6px", borderRadius:2, fontFamily:"'Libre Baskerville',serif", letterSpacing:"0.07em", textTransform:"uppercase" }}>2-Year Bill</span>
             )}
-            {bill.stage==="Failed" && (
+            {displayBill.stage==="Failed" && (
               <span style={{ fontSize:"0.55rem", background:"#FBE8E8", color:"#8C2A2A", border:"1px solid #C04040", padding:"2px 6px", borderRadius:2, fontFamily:"'Libre Baskerville',serif", letterSpacing:"0.07em", textTransform:"uppercase" }}>Failed — Monitor for Reintro</span>
             )}
             {showUrgentBadge && (
@@ -1736,7 +1747,7 @@ function BillCard({ bill, priorityColor, idx }) {
 
       {/* ── STAGE BAR ── */}
       <div style={{ padding:"0 1rem 0.65rem", overflowX:"auto" }}>
-        <StageBar stage={bill.stage} body={bill.body} />
+        <StageBar stage={displayBill.stage} body={bill.body} />
       </div>
 
       {/* ── EXPANDED ── */}
@@ -1791,7 +1802,7 @@ function BillCard({ bill, priorityColor, idx }) {
           })()}
 
           <div style={{ fontSize:"0.69rem", color:C.muted, fontFamily:"'Crimson Pro',serif", marginBottom:"0.8rem" }}>
-            📅 <strong>Last action:</strong> {bill.lastAction}
+            📅 <strong>Last action:</strong> {displayBill.lastAction}
           </div>
 
           {/* SFWPC Actions */}
@@ -2888,6 +2899,110 @@ function EducationTab() {
   );
 }
 
+// ─── BULK STATUS REFRESH ──────────────────────────────────────────────────
+// Checks all active (non-enacted) bills in batches of 5
+async function fetchBillStatus(bill) {
+  const body = bill.body === "sf"
+    ? `Search sfbos.org for current status of SF ordinance: ${bill.id} — "${bill.title}" by ${bill.sponsor}. Current records: ${bill.stage} — ${bill.lastAction}.`
+    : `Search leginfo.legislature.ca.gov for current status of ${bill.id}: "${bill.title}" by ${bill.sponsor}. Current records: ${bill.stage} — ${bill.lastAction}.`;
+
+  let messages = [{ role: "user", content: body }];
+  let finalText = "";
+  let iters = 0;
+
+  while (iters < 3) {
+    iters++;
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.REACT_APP_ANTHROPIC_KEY,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 400,
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
+        system: `Find the current status of a California or SF bill. Return ONLY a raw JSON object with:
+- stage: "Introduced"|"Committee"|"Floor"|"SecondChamber"|"Governor"|"Enacted"|"Vetoed"|"Failed"|"TwoYear"
+- lastAction: one-line status with date
+- changed: true if different from current records, false if same
+- committee: committee name if in committee, else null
+- hearingDate: ISO date YYYY-MM-DD if scheduled, else null
+No markdown. Raw JSON only.`,
+        messages,
+      }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message);
+    messages.push({ role: "assistant", content: data.content });
+    const text = (data.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("");
+    if (text) finalText = text;
+    if (data.stop_reason === "end_turn") break;
+    if (data.stop_reason === "tool_use") {
+      const tools = (data.content||[]).filter(b=>b.type==="tool_use");
+      messages.push({ role:"user", content: tools.map(t=>({ type:"tool_result", tool_use_id:t.id, content:"Search completed." })) });
+    } else break;
+  }
+
+  const match = finalText.match(/\{[\s\S]*?\}/);
+  return match ? { id: bill.id, ...JSON.parse(match[0]) } : null;
+}
+
+function useStatusRefresh(allBills) {
+  const [refreshing,  setRefreshing]  = useState(false);
+  const [progress,    setProgress]    = useState({ done: 0, total: 0 });
+  const [updates,     setUpdates]     = useState({}); // id -> status object
+  const [lastRefresh, setLastRefresh] = useState(null);
+  const [error,       setError]       = useState(null);
+
+  async function refreshAll() {
+    setRefreshing(true);
+    setError(null);
+
+    // Only refresh active bills (not enacted, not failed/vetoed)
+    const activeBills = allBills.filter(b =>
+      !["Enacted","Failed","Vetoed"].includes(b.stage) &&
+      b.id && b.title
+    );
+
+    setProgress({ done: 0, total: activeBills.length });
+    const newUpdates = { ...updates };
+    const BATCH = 4;
+    const DELAY = 800; // ms between batches
+
+    try {
+      for (let i = 0; i < activeBills.length; i += BATCH) {
+        const batch = activeBills.slice(i, i + BATCH);
+        const results = await Promise.allSettled(batch.map(fetchBillStatus));
+
+        results.forEach((r, j) => {
+          if (r.status === "fulfilled" && r.value) {
+            newUpdates[batch[j].id] = r.value;
+          }
+        });
+
+        setProgress({ done: Math.min(i + BATCH, activeBills.length), total: activeBills.length });
+        setUpdates({ ...newUpdates });
+
+        // Delay between batches to avoid rate limits
+        if (i + BATCH < activeBills.length) {
+          await new Promise(res => setTimeout(res, DELAY));
+        }
+      }
+      setLastRefresh(new Date());
+    } catch(e) {
+      setError(e.message || "Refresh failed.");
+    }
+    setRefreshing(false);
+  }
+
+  const changedCount = Object.values(updates).filter(u => u.changed).length;
+
+  return { refreshAll, refreshing, progress, updates, lastRefresh, changedCount, error };
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────
 function SFWPCTracker() {
   const [activeTab,      setActiveTab]      = useState("education");
@@ -2903,7 +3018,6 @@ function SFWPCTracker() {
   const allBills = useMemo(() => {
     const hardcodedIds = new Set(BILLS.map(b => b.id.toLowerCase().replace(/\s+/g,"")));
     const newOnly = scannedBills.filter(b => b.id && !hardcodedIds.has(b.id.toLowerCase().replace(/\s+/g,"")));
-    // Give scanned bills defaults for fields BillCard needs
     const normalized = newOnly.map(b => ({
       sfwpcActions: ["Review this newly scanned bill and determine SFWPC's position"],
       position: b.position || "MONITOR",
@@ -2911,6 +3025,9 @@ function SFWPCTracker() {
     }));
     return [...BILLS, ...normalized];
   }, [scannedBills]);
+
+  // Bulk status refresh
+  const { refreshAll, refreshing, progress, updates, lastRefresh, changedCount, error: refreshError } = useStatusRefresh(allBills);
 
   const filtered = useMemo(()=> {
     const seen = new Set();
@@ -2999,19 +3116,68 @@ function SFWPCTracker() {
                 </div>
               </div>
 
-              {/* Stats */}
-              <div style={{ display:"flex", gap:"1.1rem", flexWrap:"wrap", alignSelf:"flex-end" }}>
-                {[
-                  [stats.total,   "Bills Tracked",        C.cream],
-                  [stats.enacted, "Enacted",              "#7DD8A8"],
-                  [stats.active,  "Support",              "#F5B942"],
-                  [stats.oppose,  "Oppose",               "#F4A0A0"],
-                ].map(([n,l,col])=>(
-                  <div key={l} style={{ textAlign:"center" }}>
-                    <div style={{ fontFamily:"'Libre Baskerville',serif", fontSize:"1.25rem", fontWeight:700, color:col, lineHeight:1 }}>{n}</div>
-                    <div style={{ fontSize:"0.5rem", letterSpacing:"0.12em", textTransform:"uppercase", color:"rgba(250,247,242,0.35)", marginTop:2 }}>{l}</div>
-                  </div>
-                ))}
+              {/* Stats + Refresh */}
+              <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:"0.5rem" }}>
+                <div style={{ display:"flex", gap:"1.1rem", flexWrap:"wrap", justifyContent:"flex-end" }}>
+                  {[
+                    [stats.total,   "Bills Tracked",  C.cream],
+                    [stats.enacted, "Enacted",        "#7DD8A8"],
+                    [stats.active,  "Support",        "#F5B942"],
+                    [stats.oppose,  "Oppose",         "#F4A0A0"],
+                  ].map(([n,l,col])=>(
+                    <div key={l} style={{ textAlign:"center" }}>
+                      <div style={{ fontFamily:"'Libre Baskerville',serif", fontSize:"1.25rem", fontWeight:700, color:col, lineHeight:1 }}>{n}</div>
+                      <div style={{ fontSize:"0.5rem", letterSpacing:"0.12em", textTransform:"uppercase", color:"rgba(250,247,242,0.35)", marginTop:2 }}>{l}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Refresh All button */}
+                <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:"0.25rem" }}>
+                  <button
+                    onClick={refreshAll}
+                    disabled={refreshing}
+                    style={{
+                      padding:"0.35rem 0.85rem",
+                      background: refreshing ? "rgba(245,185,66,0.2)" : "rgba(245,185,66,0.15)",
+                      border:"1px solid rgba(245,185,66,0.4)",
+                      borderRadius:2,
+                      fontFamily:"'Libre Baskerville',serif", fontSize:"0.58rem",
+                      letterSpacing:"0.1em", textTransform:"uppercase",
+                      color: refreshing ? "rgba(245,185,66,0.5)" : "#F5B942",
+                      cursor: refreshing ? "wait" : "pointer", transition:"all 0.2s",
+                    }}
+                  >
+                    {refreshing
+                      ? `🔄 Checking ${progress.done}/${progress.total} bills…`
+                      : changedCount > 0
+                        ? `🔄 Refresh All · ${changedCount} updated`
+                        : "🔄 Refresh All Statuses"
+                    }
+                  </button>
+
+                  {/* Progress bar */}
+                  {refreshing && progress.total > 0 && (
+                    <div style={{ width:"100%", height:3, background:"rgba(255,255,255,0.1)", borderRadius:2, overflow:"hidden" }}>
+                      <div style={{
+                        height:"100%", borderRadius:2,
+                        background:"#F5B942",
+                        width:`${(progress.done/progress.total)*100}%`,
+                        transition:"width 0.4s ease",
+                      }}/>
+                    </div>
+                  )}
+
+                  {lastRefresh && !refreshing && (
+                    <div style={{ fontSize:"0.5rem", color:"rgba(250,247,242,0.3)", fontFamily:"'Crimson Pro',serif" }}>
+                      Last refreshed: {lastRefresh.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}
+                      {changedCount > 0 && <span style={{ color:"#7DD8A8", marginLeft:"0.4rem" }}>· {changedCount} status{changedCount!==1?"es":""} changed</span>}
+                    </div>
+                  )}
+                  {refreshError && (
+                    <div style={{ fontSize:"0.55rem", color:"#F4A0A0", fontFamily:"'Crimson Pro',serif" }}>⚠ {refreshError}</div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -3237,6 +3403,7 @@ function SFWPCTracker() {
                 bill={bill}
                 priorityColor={(PRIORITIES.find(p=>p.id===bill.priority)||{}).color||C.navy}
                 idx={i}
+                liveUpdate={updates[bill.id] || null}
               />
             ))}
             <div style={{ marginTop:"1.25rem", padding:"0.85rem 1rem", background:C.sand, borderLeft:`3px solid ${C.gold}`, fontSize:"0.7rem", color:C.muted, lineHeight:1.65, fontStyle:"italic" }}>
